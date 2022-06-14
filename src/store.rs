@@ -116,6 +116,7 @@ mod tests {
     use serial_test::serial;
     use tokio::sync::mpsc::Sender;
 
+    const STORE_PATH: &str = "db";
     const KEYS: [&str; 4] = ["hey", "hi", "yoo-hoo", "bonjour"];
     const VALUES: [&str; 4] = ["English", "English", "Slang", "French"];
 
@@ -123,7 +124,7 @@ mod tests {
     #[serial]
     async fn set_and_read_multiple_key_value_pairs() {
         let (tx, rv) = mpsc::channel(1);
-        let _store = Store::new(rv, 2, "db");
+        let _store = Store::new(rv, 2, STORE_PATH);
 
         let keys = KEYS.to_vec();
         let values = VALUES.to_vec();
@@ -143,7 +144,7 @@ mod tests {
     #[serial]
     async fn set_and_delete_multiple_key_value_pairs() {
         let (tx, rv) = mpsc::channel(1);
-        let _store = Store::new(rv, 2, "db");
+        let _store = Store::new(rv, 2, STORE_PATH);
 
         let keys = KEYS.to_vec();
         let values = VALUES.to_vec();
@@ -177,7 +178,7 @@ mod tests {
     #[serial]
     async fn set_and_clear() {
         let (tx, rv) = mpsc::channel(1);
-        let _store = Store::new(rv, 2, "db");
+        let _store = Store::new(rv, 2, STORE_PATH);
 
         let keys = KEYS.to_vec();
         let values = VALUES.to_vec();
