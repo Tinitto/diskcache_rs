@@ -151,13 +151,7 @@ mod tests {
         let keys_to_delete = keys[2..].to_vec();
 
         insert_test_data(&tx, &keys, &values).await;
-
-        for k in &keys_to_delete {
-            let key = k.to_string();
-            let (resp, recv) = oneshot::channel();
-            let _ = tx.send(Action::Del { key, resp }).await;
-            let _ = recv.await.unwrap();
-        }
+        delete_keys(&tx, &keys_to_delete).await;
 
         let received_values = get_values_for_keys(&tx, keys.clone()).await;
         let mut expected_values: Vec<Option<String>> = values[..2]
@@ -184,10 +178,7 @@ mod tests {
         let values = VALUES.to_vec();
 
         insert_test_data(&tx, &keys, &values).await;
-
-        let (resp, recv) = oneshot::channel();
-        let _ = tx.send(Action::Clear { resp }).await;
-        let _ = recv.await.unwrap();
+        clear_test_data(&tx).await;
 
         let received_values = get_values_for_keys(&tx, keys.clone()).await;
         let expected_values: Vec<Option<String>> = keys.into_iter().map(|_| None).collect();
@@ -224,6 +215,86 @@ mod tests {
 
         let _ = tx.send(Action::Close).await;
         _store.await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn persist_to_file_after_delete() {
+        let (tx, rv) = mpsc::channel(1);
+        let _store = Store::new(rv, 2, STORE_PATH);
+
+        let keys = KEYS.to_vec();
+        let values = VALUES.to_vec();
+        let keys_to_delete = keys[2..].to_vec();
+
+        insert_test_data(&tx, &keys, &values).await;
+        delete_keys(&tx, &keys_to_delete).await;
+
+        // Close the store
+        let _ = tx.send(Action::Close).await;
+        _store.await;
+
+        // Open new store instance
+        let (tx, rv) = mpsc::channel(1);
+        let _store = Store::new(rv, 2, STORE_PATH);
+
+        let received_values = get_values_for_keys(&tx, keys.clone()).await;
+        let mut expected_values: Vec<Option<String>> = values[..2]
+            .into_iter()
+            .map(|v| Some(v.to_string()))
+            .collect();
+        for _ in 0..keys_to_delete.len() {
+            expected_values.push(None);
+        }
+
+        assert_eq!(expected_values, received_values);
+
+        let _ = tx.send(Action::Close).await;
+        _store.await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn persist_to_file_after_clear() {
+        let (tx, rv) = mpsc::channel(1);
+        let _store = Store::new(rv, 2, STORE_PATH);
+
+        let keys = KEYS.to_vec();
+        let values = VALUES.to_vec();
+
+        insert_test_data(&tx, &keys, &values).await;
+        clear_test_data(&tx).await;
+
+        // Close the store
+        let _ = tx.send(Action::Close).await;
+        _store.await;
+
+        // Open new store instance
+        let (tx, rv) = mpsc::channel(1);
+        let _store = Store::new(rv, 2, STORE_PATH);
+
+        let received_values = get_values_for_keys(&tx, keys.clone()).await;
+        let expected_values: Vec<Option<String>> = keys.into_iter().map(|_| None).collect();
+
+        assert_eq!(expected_values, received_values);
+
+        let _ = tx.send(Action::Close).await;
+        _store.await;
+    }
+
+    async fn clear_test_data(tx: &Sender<Action>) {
+        let (resp, recv) = oneshot::channel();
+        let _ = tx.send(Action::Clear { resp }).await;
+        let _ = recv.await.unwrap();
+    }
+
+    async fn delete_keys(tx: &Sender<Action>, keys_to_delete: &Vec<&str>) {
+        for k in keys_to_delete {
+            let key = k.to_string();
+            let (resp, recv) = oneshot::channel();
+            let _ = tx.send(Action::Del { key, resp }).await;
+            let _ = recv.await.unwrap();
+        }
     }
 
     async fn get_values_for_keys(tx: &Sender<Action>, keys: Vec<&str>) -> Vec<Option<String>> {
