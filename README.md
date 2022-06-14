@@ -81,6 +81,14 @@ Some examples can be found in the /examples folder.
 cargo run --example hello_diskcache
 ```
 
+## Tests
+
+Run the command
+
+```shell
+cargo test
+```
+
 ## License
 
 Copyright (c) 2022 [Martin Ahindura](https://github.com/Tinitto) Licensed under the [MIT License](./LICENSE)
