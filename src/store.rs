@@ -198,6 +198,34 @@ mod tests {
         _store.await;
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn persist_to_file() {
+        let (tx, rv) = mpsc::channel(1);
+        let _store = Store::new(rv, 2, STORE_PATH);
+
+        let keys = KEYS.to_vec();
+        let values = VALUES.to_vec();
+
+        insert_test_data(&tx, &keys, &values).await;
+        // Close the store
+        let _ = tx.send(Action::Close).await;
+        _store.await;
+
+        // Open new store instance
+        let (tx, rv) = mpsc::channel(1);
+        let _store = Store::new(rv, 2, STORE_PATH);
+
+        let received_values = get_values_for_keys(&tx, keys.clone()).await;
+        let expected_values: Vec<Option<String>> =
+            values.into_iter().map(|v| Some(v.to_string())).collect();
+
+        assert_eq!(expected_values, received_values);
+
+        let _ = tx.send(Action::Close).await;
+        _store.await;
+    }
+
     async fn get_values_for_keys(tx: &Sender<Action>, keys: Vec<&str>) -> Vec<Option<String>> {
         let mut received_values = Vec::with_capacity(keys.len());
 

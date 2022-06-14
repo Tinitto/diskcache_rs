@@ -144,6 +144,30 @@ mod tests {
         client.close().await;
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn persist_to_file() {
+        let mut client = Client::new(STORE_PATH, 2);
+
+        let keys = KEYS.to_vec();
+        let values = VALUES.to_vec();
+
+        insert_test_data(&mut client, &keys, &values).await;
+        // close old client and store instances
+        client.close().await;
+
+        // Open new store instance
+        let mut client = Client::new(STORE_PATH, 2);
+
+        let received_values = get_values_for_keys(&client, keys.clone()).await;
+        let expected_values: Vec<Option<String>> =
+            values.into_iter().map(|v| Some(v.to_string())).collect();
+
+        assert_eq!(expected_values, received_values);
+
+        client.close().await;
+    }
+
     async fn get_values_for_keys(client: &Client, keys: Vec<&str>) -> Vec<Option<String>> {
         let mut received_values = Vec::with_capacity(keys.len());
 

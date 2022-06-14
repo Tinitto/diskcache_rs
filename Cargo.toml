@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread", "sync", "fs", "io-std"] }
+tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread", "sync", "fs"] }
 
 [dev-dependencies]
 serial_test = "*"
