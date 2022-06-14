@@ -276,6 +276,24 @@ mod tests {
         _store.close().await;
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn close_aborts_tasks() {
+        let (_, rv) = mpsc::channel(1);
+        let _store = Store::new(rv, 2, STORE_PATH);
+
+        for handler in &_store.handlers {
+            assert!(!handler.is_finished())
+        }
+
+        // Close the store
+        _store.close().await;
+
+        for handler in &_store.handlers {
+            assert!(handler.is_finished())
+        }
+    }
+
     async fn clear_test_data(tx: &Sender<Action>) {
         let (resp, recv) = oneshot::channel();
         let _ = tx.send(Action::Clear { resp }).await;
