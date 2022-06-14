@@ -5,16 +5,15 @@ use tokio::sync::oneshot;
 
 pub struct Client {
     action_sender: mpsc::Sender<Action>,
-    _store: Option<Store>,
+    store: Store,
 }
 
 impl Client {
     pub fn new(store_path: &str, num_of_workers: usize) -> Client {
         let (action_sender, action_receiver) = mpsc::channel(10);
-        let store = Store::new(action_receiver, num_of_workers, store_path);
         Client {
             action_sender,
-            _store: Some(store),
+            store: Store::new(action_receiver, num_of_workers, store_path),
         }
     }
 
@@ -64,9 +63,7 @@ impl Client {
     }
 
     pub async fn close(&mut self) {
-        let _ = self.action_sender.send(Action::Close).await;
-        let store = self._store.take().unwrap();
-        store.await;
+        self.store.close().await;
     }
 }
 

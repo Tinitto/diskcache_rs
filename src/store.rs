@@ -1,11 +1,9 @@
 use core::option::Option::{None, Some};
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
+use tokio::time::{sleep, Duration};
 
 pub enum Action {
     Set {
@@ -24,7 +22,6 @@ pub enum Action {
     Clear {
         resp: oneshot::Sender<()>,
     },
-    Close,
 }
 
 pub struct Store {
@@ -54,14 +51,32 @@ impl Store {
         store
     }
 
+    pub async fn close(&self) {
+        for handler in &self.handlers {
+            handler.abort()
+        }
+
+        'outer: loop {
+            sleep(Duration::from_millis(200)).await;
+
+            for handler in &self.handlers {
+                if !handler.is_finished() {
+                    continue 'outer;
+                }
+            }
+
+            break;
+        }
+    }
+
     fn generate_handlers(&mut self, num_of_handlers: usize) {
-        for _ in 1..num_of_handlers {
+        for _ in 0..num_of_handlers {
             let db_mutex = Arc::clone(&self.db);
             let receiver_mutex = Arc::clone(&self.receiver_mutex_arc);
             let store_path = self.store_path.clone();
 
             let handler = tokio::spawn(async move {
-                'main: loop {
+                loop {
                     let mut rv = receiver_mutex.lock().await;
                     let mut db = db_mutex.lock().await;
                     let action = rv.recv().await.unwrap();
@@ -86,27 +101,12 @@ impl Store {
                             crate::fs::clear_from_file(&store_path).await;
                             resp.send(db.clear()).unwrap()
                         }
-                        Action::Close => break 'main,
                     };
                 }
             });
 
             self.handlers.push(handler);
         }
-    }
-}
-
-impl Future for Store {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        for handler in &mut self.handlers {
-            if let Poll::Pending = Future::poll(Pin::new(handler), cx) {
-                return Poll::Pending;
-            }
-        }
-
-        Poll::Ready(())
     }
 }
 
@@ -136,8 +136,7 @@ mod tests {
             values.into_iter().map(|v| Some(v.to_string())).collect();
         assert_eq!(expected_values, received_values);
 
-        let _ = tx.send(Action::Close).await;
-        _store.await;
+        _store.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -164,8 +163,7 @@ mod tests {
 
         assert_eq!(expected_values, received_values);
 
-        let _ = tx.send(Action::Close).await;
-        _store.await;
+        _store.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -185,8 +183,7 @@ mod tests {
 
         assert_eq!(expected_values, received_values);
 
-        let _ = tx.send(Action::Close).await;
-        _store.await;
+        _store.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -200,8 +197,8 @@ mod tests {
 
         insert_test_data(&tx, &keys, &values).await;
         // Close the store
-        let _ = tx.send(Action::Close).await;
-        _store.await;
+
+        _store.close().await;
 
         // Open new store instance
         let (tx, rv) = mpsc::channel(1);
@@ -213,8 +210,7 @@ mod tests {
 
         assert_eq!(expected_values, received_values);
 
-        let _ = tx.send(Action::Close).await;
-        _store.await;
+        _store.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -231,8 +227,8 @@ mod tests {
         delete_keys(&tx, &keys_to_delete).await;
 
         // Close the store
-        let _ = tx.send(Action::Close).await;
-        _store.await;
+
+        _store.close().await;
 
         // Open new store instance
         let (tx, rv) = mpsc::channel(1);
@@ -249,8 +245,7 @@ mod tests {
 
         assert_eq!(expected_values, received_values);
 
-        let _ = tx.send(Action::Close).await;
-        _store.await;
+        _store.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -266,8 +261,8 @@ mod tests {
         clear_test_data(&tx).await;
 
         // Close the store
-        let _ = tx.send(Action::Close).await;
-        _store.await;
+
+        _store.close().await;
 
         // Open new store instance
         let (tx, rv) = mpsc::channel(1);
@@ -278,8 +273,7 @@ mod tests {
 
         assert_eq!(expected_values, received_values);
 
-        let _ = tx.send(Action::Close).await;
-        _store.await;
+        _store.close().await;
     }
 
     async fn clear_test_data(tx: &Sender<Action>) {
