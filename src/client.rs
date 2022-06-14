@@ -133,7 +133,6 @@ mod tests {
         let values = VALUES.to_vec();
 
         insert_test_data(&mut client, &keys, &values).await;
-
         client.clear().await;
 
         let received_values = get_values_for_keys(&client, keys.clone()).await;
@@ -166,6 +165,69 @@ mod tests {
         assert_eq!(expected_values, received_values);
 
         client.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn persist_to_file_after_delete() {
+        let mut client = Client::new(STORE_PATH, 2);
+
+        let keys = KEYS.to_vec();
+        let values = VALUES.to_vec();
+        let keys_to_delete = keys[2..].to_vec();
+
+        insert_test_data(&mut client, &keys, &values).await;
+        delete_keys(&mut client, &keys_to_delete).await;
+
+        // Close the store
+        client.close().await;
+
+        // Open new store instance
+        let mut client = Client::new(STORE_PATH, 2);
+
+        let received_values = get_values_for_keys(&client, keys.clone()).await;
+        let mut expected_values: Vec<Option<String>> = values[..2]
+            .into_iter()
+            .map(|v| Some(v.to_string()))
+            .collect();
+        for _ in 0..keys_to_delete.len() {
+            expected_values.push(None);
+        }
+
+        assert_eq!(expected_values, received_values);
+
+        client.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn persist_to_file_after_clear() {
+        let mut client = Client::new(STORE_PATH, 2);
+
+        let keys = KEYS.to_vec();
+        let values = VALUES.to_vec();
+
+        insert_test_data(&mut client, &keys, &values).await;
+        client.clear().await;
+
+        // Close the store
+        client.close().await;
+
+        // Open new store instance
+        let mut client = Client::new(STORE_PATH, 2);
+
+        let received_values = get_values_for_keys(&client, keys.clone()).await;
+        let expected_values: Vec<Option<String>> = keys.into_iter().map(|_| None).collect();
+
+        assert_eq!(expected_values, received_values);
+
+        client.close().await;
+    }
+
+    async fn delete_keys(client: &mut Client, keys_to_delete: &Vec<&str>) {
+        for k in keys_to_delete {
+            let _ = &client.delete(*k).await;
+        }
     }
 
     async fn get_values_for_keys(client: &Client, keys: Vec<&str>) -> Vec<Option<String>> {
