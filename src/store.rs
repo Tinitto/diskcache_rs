@@ -68,22 +68,22 @@ impl Store {
 
                     match action {
                         Action::Set { key, value, resp } => {
-                            crate::fs::save_to_file(&store_path, &key, &value);
+                            crate::fs::save_to_file(&store_path, &key, &value).await;
                             resp.send(db.insert(key, value)).unwrap();
                         }
                         Action::Get { key, resp } => {
                             let value = match db.get(&key[..]) {
                                 Some(v) => Some(v.to_string()),
-                                None => crate::fs::get_from_file(&store_path, &key),
+                                None => crate::fs::get_from_file(&store_path, &key).await,
                             };
                             resp.send(value).unwrap()
                         }
                         Action::Del { key, resp } => {
-                            crate::fs::remove_from_file(&store_path, &key);
+                            crate::fs::remove_from_file(&store_path, &key).await;
                             resp.send(db.remove(&key[..])).unwrap()
                         }
                         Action::Clear { resp } => {
-                            crate::fs::clear_from_file(&store_path);
+                            crate::fs::clear_from_file(&store_path).await;
                             resp.send(db.clear()).unwrap()
                         }
                         Action::Close => break 'main,
