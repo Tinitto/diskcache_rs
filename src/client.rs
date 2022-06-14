@@ -69,3 +69,94 @@ impl Client {
         store.await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    const STORE_PATH: &str = "client_db";
+    const KEYS: [&str; 4] = ["hey", "hi", "yoo-hoo", "bonjour"];
+    const VALUES: [&str; 4] = ["English", "English", "Slang", "French"];
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn set_and_read_multiple_key_value_pairs() {
+        let mut client = Client::new(STORE_PATH, 2);
+
+        let keys = KEYS.to_vec();
+        let values = VALUES.to_vec();
+
+        insert_test_data(&mut client, &keys, &values).await;
+        let received_values = get_values_for_keys(&client, keys).await;
+
+        let expected_values: Vec<Option<String>> =
+            values.into_iter().map(|v| Some(v.to_string())).collect();
+        assert_eq!(expected_values, received_values);
+
+        client.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn set_and_delete_multiple_key_value_pairs() {
+        let mut client = Client::new(STORE_PATH, 2);
+        let keys = KEYS.to_vec();
+        let values = VALUES.to_vec();
+        let keys_to_delete = keys[2..].to_vec();
+
+        insert_test_data(&mut client, &keys, &values).await;
+
+        for k in &keys_to_delete {
+            let _ = &client.delete(*k).await;
+        }
+
+        let received_values = get_values_for_keys(&client, keys.clone()).await;
+        let mut expected_values: Vec<Option<String>> = values[..2]
+            .into_iter()
+            .map(|v| Some(v.to_string()))
+            .collect();
+        for _ in 0..keys_to_delete.len() {
+            expected_values.push(None);
+        }
+
+        assert_eq!(expected_values, received_values);
+        client.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn set_and_clear() {
+        let mut client = Client::new(STORE_PATH, 2);
+
+        let keys = KEYS.to_vec();
+        let values = VALUES.to_vec();
+
+        insert_test_data(&mut client, &keys, &values).await;
+
+        client.clear().await;
+
+        let received_values = get_values_for_keys(&client, keys.clone()).await;
+        let expected_values: Vec<Option<String>> = keys.into_iter().map(|_| None).collect();
+
+        assert_eq!(expected_values, received_values);
+
+        client.close().await;
+    }
+
+    async fn get_values_for_keys(client: &Client, keys: Vec<&str>) -> Vec<Option<String>> {
+        let mut received_values = Vec::with_capacity(keys.len());
+
+        for k in keys {
+            let _ = &received_values.push(client.get(k).await);
+        }
+
+        received_values
+    }
+
+    async fn insert_test_data(client: &mut Client, keys: &Vec<&str>, values: &Vec<&str>) {
+        for (k, v) in keys.clone().into_iter().zip(values) {
+            let _ = &client.set(k.to_string(), v.to_string()).await;
+        }
+    }
+}
