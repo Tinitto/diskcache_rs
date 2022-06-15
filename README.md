@@ -20,7 +20,7 @@ cargo new hi_diskcache
 
 ```TOML
 [dependencies]
-tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["full"] }
 diskcache_rs = "0.1.0"
 ```
 
@@ -38,7 +38,7 @@ async fn main() {
     // Setting the values
     println!("[Inserting key-value pairs]");
     for (k, v) in keys.clone().into_iter().zip(values) {
-        store.set(k.to_string(), v.to_string()).await;
+        let _ = store.set(k.to_string(), v.to_string()).await;
     }
 
     // Getting the values
@@ -88,6 +88,17 @@ Run the command
 ```shell
 cargo test
 ```
+
+## TODO:
+
+- [ ] Add documentation
+- [ ] Add python wrapper
+- [ ] Benchmark against any other key-value store out there
+- [ ] Package for cargo
+- [ ] Package for pypi
+- [ ] Add Github actions CI set up
+- [ ] Write a simple tutorial on how to use it
+- [ ] Add releases
 
 ## License
 
