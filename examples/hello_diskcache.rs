@@ -9,7 +9,7 @@ async fn main() {
     // Setting the values
     println!("[Inserting key-value pairs]");
     for (k, v) in keys.clone().into_iter().zip(values) {
-        store.set(k.to_string(), v.to_string()).await;
+        let _ = store.set(k.to_string(), v.to_string()).await;
     }
 
     // Getting the values

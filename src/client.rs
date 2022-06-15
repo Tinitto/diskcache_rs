@@ -1,11 +1,13 @@
 use crate::store::{Action, Store};
 use core::option::Option;
+use std::io::{Error, ErrorKind};
+use tokio::io;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
 pub struct Client {
     action_sender: mpsc::Sender<Action>,
-    store: Store,
+    store: Option<Store>,
 }
 
 impl Client {
@@ -13,57 +15,63 @@ impl Client {
         let (action_sender, action_receiver) = mpsc::channel(10);
         Client {
             action_sender,
-            store: Store::new(action_receiver, num_of_workers, store_path),
+            store: Some(Store::new(action_receiver, num_of_workers, store_path)),
         }
     }
 
-    pub async fn set(&mut self, key: String, value: String) {
+    pub async fn set(&mut self, key: String, value: String) -> io::Result<Option<String>> {
         let (tx, rv) = oneshot::channel();
-        let _ = self
-            .action_sender
-            .send(Action::Set {
-                key,
-                value,
-                resp: tx,
-            })
-            .await;
-
-        let _ = rv.await;
+        let action = Action::Set {
+            key,
+            value,
+            resp: tx,
+        };
+        self.send_single_record_action(action, rv).await
     }
 
-    pub async fn get(&self, key: &str) -> Option<String> {
+    pub async fn get(&mut self, key: &str) -> io::Result<Option<String>> {
         let (tx, rv) = oneshot::channel();
-        let _ = self
-            .action_sender
-            .send(Action::Get {
-                key: key.to_string(),
-                resp: tx,
-            })
-            .await;
-        rv.await.unwrap()
+        let action = Action::Get {
+            key: key.to_string(),
+            resp: tx,
+        };
+
+        self.send_single_record_action(action, rv).await
     }
 
-    pub async fn delete(&mut self, key: &str) -> Option<String> {
+    pub async fn delete(&mut self, key: &str) -> io::Result<Option<String>> {
         let (tx, rv) = oneshot::channel();
-        let _ = self
-            .action_sender
-            .send(Action::Del {
-                key: key.to_string(),
-                resp: tx,
-            })
-            .await;
-
-        rv.await.unwrap()
+        let action = Action::Del {
+            key: key.to_string(),
+            resp: tx,
+        };
+        self.send_single_record_action(action, rv).await
     }
 
-    pub async fn clear(&mut self) {
+    pub async fn clear(&mut self) -> io::Result<()> {
         let (tx, rv) = oneshot::channel();
-        let _ = self.action_sender.send(Action::Clear { resp: tx }).await;
-        let _ = rv.await;
+        let action = Action::Clear { resp: tx };
+        self.send_single_record_action(action, rv).await
+    }
+
+    async fn send_single_record_action<T>(
+        &mut self,
+        action: Action,
+        rv: oneshot::Receiver<io::Result<T>>,
+    ) -> io::Result<T> {
+        if let Err(e) = self.action_sender.send(action).await {
+            return Err(Error::new(ErrorKind::ConnectionRefused, e.to_string()));
+        }
+
+        match rv.await {
+            Ok(v) => v,
+            Err(e) => Err(Error::new(ErrorKind::ConnectionRefused, e.to_string())),
+        }
     }
 
     pub async fn close(&mut self) {
-        self.store.close().await;
+        let store = self.store.take().unwrap();
+        store.close().await;
     }
 }
 
@@ -85,11 +93,16 @@ mod tests {
         let values = VALUES.to_vec();
 
         insert_test_data(&mut client, &keys, &values).await;
-        let received_values = get_values_for_keys(&client, keys).await;
+        let received_values = get_values_for_keys(&mut client, keys).await;
 
-        let expected_values: Vec<Option<String>> =
-            values.into_iter().map(|v| Some(v.to_string())).collect();
-        assert_eq!(expected_values, received_values);
+        let expected_values: Vec<io::Result<Option<String>>> = values
+            .into_iter()
+            .map(|v| Ok(Some(v.to_string())))
+            .collect();
+
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         client.close().await;
     }
@@ -108,16 +121,19 @@ mod tests {
             let _ = &client.delete(*k).await;
         }
 
-        let received_values = get_values_for_keys(&client, keys.clone()).await;
-        let mut expected_values: Vec<Option<String>> = values[..2]
+        let received_values = get_values_for_keys(&mut client, keys.clone()).await;
+        let mut expected_values: Vec<io::Result<Option<String>>> = values[..2]
             .into_iter()
-            .map(|v| Some(v.to_string()))
+            .map(|v| Ok(Some(v.to_string())))
             .collect();
         for _ in 0..keys_to_delete.len() {
-            expected_values.push(None);
+            expected_values.push(Ok(None));
         }
 
-        assert_eq!(expected_values, received_values);
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
+
         client.close().await;
     }
 
@@ -130,12 +146,15 @@ mod tests {
         let values = VALUES.to_vec();
 
         insert_test_data(&mut client, &keys, &values).await;
-        client.clear().await;
+        let _ = client.clear().await;
 
-        let received_values = get_values_for_keys(&client, keys.clone()).await;
-        let expected_values: Vec<Option<String>> = keys.into_iter().map(|_| None).collect();
+        let received_values = get_values_for_keys(&mut client, keys.clone()).await;
+        let expected_values: Vec<io::Result<Option<String>>> =
+            keys.into_iter().map(|_| Ok(None)).collect();
 
-        assert_eq!(expected_values, received_values);
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         client.close().await;
     }
@@ -155,11 +174,15 @@ mod tests {
         // Open new store instance
         let mut client = Client::new(STORE_PATH, 2);
 
-        let received_values = get_values_for_keys(&client, keys.clone()).await;
-        let expected_values: Vec<Option<String>> =
-            values.into_iter().map(|v| Some(v.to_string())).collect();
+        let received_values = get_values_for_keys(&mut client, keys.clone()).await;
+        let expected_values: Vec<io::Result<Option<String>>> = values
+            .into_iter()
+            .map(|v| Ok(Some(v.to_string())))
+            .collect();
 
-        assert_eq!(expected_values, received_values);
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         client.close().await;
     }
@@ -182,16 +205,18 @@ mod tests {
         // Open new store instance
         let mut client = Client::new(STORE_PATH, 2);
 
-        let received_values = get_values_for_keys(&client, keys.clone()).await;
-        let mut expected_values: Vec<Option<String>> = values[..2]
+        let received_values = get_values_for_keys(&mut client, keys.clone()).await;
+        let mut expected_values: Vec<io::Result<Option<String>>> = values[..2]
             .into_iter()
-            .map(|v| Some(v.to_string()))
+            .map(|v| Ok(Some(v.to_string())))
             .collect();
         for _ in 0..keys_to_delete.len() {
-            expected_values.push(None);
+            expected_values.push(Ok(None));
         }
 
-        assert_eq!(expected_values, received_values);
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         client.close().await;
     }
@@ -205,7 +230,7 @@ mod tests {
         let values = VALUES.to_vec();
 
         insert_test_data(&mut client, &keys, &values).await;
-        client.clear().await;
+        let _ = client.clear().await;
 
         // Close the store
         client.close().await;
@@ -213,12 +238,28 @@ mod tests {
         // Open new store instance
         let mut client = Client::new(STORE_PATH, 2);
 
-        let received_values = get_values_for_keys(&client, keys.clone()).await;
-        let expected_values: Vec<Option<String>> = keys.into_iter().map(|_| None).collect();
+        let received_values = get_values_for_keys(&mut client, keys.clone()).await;
+        let expected_values: Vec<io::Result<Option<String>>> =
+            keys.into_iter().map(|_| Ok(None)).collect();
 
-        assert_eq!(expected_values, received_values);
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         client.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn close_must_close_store() {
+        let mut client = Client::new(STORE_PATH, 2);
+        let _ = client.set(KEYS[0].to_string(), VALUES[0].to_string()).await;
+
+        assert!(client.get(KEYS[0]).await.is_ok());
+
+        client.close().await;
+
+        assert!(client.get(KEYS[0]).await.is_err());
     }
 
     async fn delete_keys(client: &mut Client, keys_to_delete: &Vec<&str>) {
@@ -227,7 +268,10 @@ mod tests {
         }
     }
 
-    async fn get_values_for_keys(client: &Client, keys: Vec<&str>) -> Vec<Option<String>> {
+    async fn get_values_for_keys(
+        client: &mut Client,
+        keys: Vec<&str>,
+    ) -> Vec<io::Result<Option<String>>> {
         let mut received_values = Vec::with_capacity(keys.len());
 
         for k in keys {

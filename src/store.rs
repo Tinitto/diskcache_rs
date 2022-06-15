@@ -1,6 +1,7 @@
 use core::option::Option::{None, Some};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::io;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
@@ -9,18 +10,18 @@ pub enum Action {
     Set {
         key: String,
         value: String,
-        resp: oneshot::Sender<Option<String>>,
+        resp: oneshot::Sender<io::Result<Option<String>>>,
     },
     Get {
         key: String,
-        resp: oneshot::Sender<Option<String>>,
+        resp: oneshot::Sender<io::Result<Option<String>>>,
     },
     Del {
         key: String,
-        resp: oneshot::Sender<Option<String>>,
+        resp: oneshot::Sender<io::Result<Option<String>>>,
     },
     Clear {
-        resp: oneshot::Sender<()>,
+        resp: oneshot::Sender<io::Result<()>>,
     },
 }
 
@@ -67,6 +68,9 @@ impl Store {
 
             break;
         }
+
+        let receiver_mutex = Arc::clone(&self.receiver_mutex_arc);
+        receiver_mutex.lock().await.close();
     }
 
     fn generate_handlers(&mut self, num_of_handlers: usize) {
@@ -83,23 +87,39 @@ impl Store {
 
                     match action {
                         Action::Set { key, value, resp } => {
-                            crate::fs::save_to_file(&store_path, &key, &value).await;
-                            resp.send(db.insert(key, value)).unwrap();
+                            let file_io = crate::fs::save_to_file(&store_path, &key, &value).await;
+                            match file_io {
+                                Err(v) => resp.send(Err(v)).unwrap(),
+                                Ok(()) => {
+                                    resp.send(Ok(db.insert(key, value))).unwrap();
+                                }
+                            }
                         }
                         Action::Get { key, resp } => {
                             let value = match db.get(&key[..]) {
-                                Some(v) => Some(v.to_string()),
+                                Some(v) => Ok(Some(v.to_string())),
                                 None => crate::fs::get_from_file(&store_path, &key).await,
                             };
+
                             resp.send(value).unwrap()
                         }
                         Action::Del { key, resp } => {
-                            crate::fs::remove_from_file(&store_path, &key).await;
-                            resp.send(db.remove(&key[..])).unwrap()
+                            let file_io = crate::fs::remove_from_file(&store_path, &key).await;
+                            match file_io {
+                                Err(v) => resp.send(Err(v)).unwrap(),
+                                Ok(()) => {
+                                    let value = db.remove(&key[..]);
+                                    resp.send(Ok(value)).unwrap();
+                                }
+                            }
                         }
                         Action::Clear { resp } => {
-                            crate::fs::clear_from_file(&store_path).await;
-                            resp.send(db.clear()).unwrap()
+                            let file_io = crate::fs::clear_from_file(&store_path).await;
+                            let value = match file_io {
+                                Ok(()) => Ok(db.clear()),
+                                Err(err) => Err(err),
+                            };
+                            resp.send(value).unwrap()
                         }
                     };
                 }
@@ -132,9 +152,14 @@ mod tests {
         insert_test_data(&tx, &keys, &values).await;
         let received_values = get_values_for_keys(&tx, keys).await;
 
-        let expected_values: Vec<Option<String>> =
-            values.into_iter().map(|v| Some(v.to_string())).collect();
-        assert_eq!(expected_values, received_values);
+        let expected_values: Vec<io::Result<Option<String>>> = values
+            .into_iter()
+            .map(|v| Ok(Some(v.to_string())))
+            .collect();
+
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         _store.close().await;
     }
@@ -153,15 +178,17 @@ mod tests {
         delete_keys(&tx, &keys_to_delete).await;
 
         let received_values = get_values_for_keys(&tx, keys.clone()).await;
-        let mut expected_values: Vec<Option<String>> = values[..2]
+        let mut expected_values: Vec<io::Result<Option<String>>> = values[..2]
             .into_iter()
-            .map(|v| Some(v.to_string()))
+            .map(|v| Ok(Some(v.to_string())))
             .collect();
         for _ in 0..keys_to_delete.len() {
-            expected_values.push(None);
+            expected_values.push(Ok(None));
         }
 
-        assert_eq!(expected_values, received_values);
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         _store.close().await;
     }
@@ -179,9 +206,12 @@ mod tests {
         clear_test_data(&tx).await;
 
         let received_values = get_values_for_keys(&tx, keys.clone()).await;
-        let expected_values: Vec<Option<String>> = keys.into_iter().map(|_| None).collect();
+        let expected_values: Vec<io::Result<Option<String>>> =
+            keys.into_iter().map(|_| Ok(None)).collect();
 
-        assert_eq!(expected_values, received_values);
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         _store.close().await;
     }
@@ -205,10 +235,14 @@ mod tests {
         let _store = Store::new(rv, 2, STORE_PATH);
 
         let received_values = get_values_for_keys(&tx, keys.clone()).await;
-        let expected_values: Vec<Option<String>> =
-            values.into_iter().map(|v| Some(v.to_string())).collect();
+        let expected_values: Vec<io::Result<Option<String>>> = values
+            .into_iter()
+            .map(|v| Ok(Some(v.to_string())))
+            .collect();
 
-        assert_eq!(expected_values, received_values);
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         _store.close().await;
     }
@@ -235,15 +269,17 @@ mod tests {
         let _store = Store::new(rv, 2, STORE_PATH);
 
         let received_values = get_values_for_keys(&tx, keys.clone()).await;
-        let mut expected_values: Vec<Option<String>> = values[..2]
+        let mut expected_values: Vec<io::Result<Option<String>>> = values[..2]
             .into_iter()
-            .map(|v| Some(v.to_string()))
+            .map(|v| Ok(Some(v.to_string())))
             .collect();
         for _ in 0..keys_to_delete.len() {
-            expected_values.push(None);
+            expected_values.push(Ok(None));
         }
 
-        assert_eq!(expected_values, received_values);
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         _store.close().await;
     }
@@ -269,9 +305,12 @@ mod tests {
         let _store = Store::new(rv, 2, STORE_PATH);
 
         let received_values = get_values_for_keys(&tx, keys.clone()).await;
-        let expected_values: Vec<Option<String>> = keys.into_iter().map(|_| None).collect();
+        let expected_values: Vec<io::Result<Option<String>>> =
+            keys.into_iter().map(|_| Ok(None)).collect();
 
-        assert_eq!(expected_values, received_values);
+        for (got, expected) in received_values.into_iter().zip(expected_values) {
+            assert_eq!(got.unwrap(), expected.unwrap());
+        }
 
         _store.close().await;
     }
@@ -309,7 +348,10 @@ mod tests {
         }
     }
 
-    async fn get_values_for_keys(tx: &Sender<Action>, keys: Vec<&str>) -> Vec<Option<String>> {
+    async fn get_values_for_keys(
+        tx: &Sender<Action>,
+        keys: Vec<&str>,
+    ) -> Vec<io::Result<Option<String>>> {
         let mut received_values = Vec::with_capacity(keys.len());
 
         for k in keys {
